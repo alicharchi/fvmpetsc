@@ -1,0 +1,12 @@
+build/
+output/
+main
+oneD
+twoD
+*.csv
+*.out
+*.big
+*.bin
+*.Rhistory
+*.exe
+*.png
