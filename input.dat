@@ -1,0 +1,24 @@
+# Grid
+-nx 100
+-ny 100
+
+# Domain
+-Lx 2.0
+-Ly 2.0
+
+# Physics
+-alpha 0.5
+-bcW 100
+-bcE 0
+-bcS 50
+-bcN 0
+
+# Solver
+-ksp_type cg
+-pc_type lu
+-ksp_rtol 1e-8
+-ksp_max_it 1000
+
+# Diagnostics
+-ksp_monitor
+-ksp_converged_reason

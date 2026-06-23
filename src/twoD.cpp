@@ -1,253 +1,273 @@
-static char help[] = "Solves 2D heat equation using fvm method.\n\n";
-
 #include <petscksp.h>
+#include <petscdm.h>
+#include <petscdmda.h>
 
-void ijth(const PetscInt p,const PetscInt nx, PetscInt* i,PetscInt* j);
-PetscInt pth(const PetscInt nx, const PetscInt i, const PetscInt j);
+static char help[] =
+    "Solves 2D steady heat equation using finite volume method.\n";
+
+PetscErrorCode WriteResults(Vec T)
+{
+    PetscViewer viewer;
+
+    PetscCall(
+        PetscViewerVTKOpen(
+            PETSC_COMM_WORLD,
+            "temperature.vts",
+            FILE_MODE_WRITE,
+            &viewer));
+
+    PetscCall(VecView(T, viewer));
+    PetscCall(PetscViewerDestroy(&viewer));
+
+    return PETSC_SUCCESS;
+}
 
 int main(int argc, char **args)
 {
-   Vec         x, b;                                      /* RHS */
-   Mat         A;                                         /* linear system matrix */
-   KSP         ksp;                                       /* linear solver context */
-   PC          pc;                                        /* preconditioner context */
-   PetscReal   tol = 1e-7; /* norm of solution error */
-   PetscInt    i,j,p,k, nx = 100, ny = 50, N, col[5], rstart, rend, nlocal;
-   PetscScalar value[5], bi;
-   PetscScalar Lx=1,Ly=1;
-   PetscScalar bcW =0, bcE = 0, bcN=0, bcS=0;
-   PetscScalar aP, aW, aE, aS, aN, Sp, Su;
-   PetscScalar alpha=1,dx, dy;
-   PetscScalar Ae , Aw , As , An ;
+    PetscCall(PetscInitialize(&argc, &args, NULL, help));
 
-   PetscFunctionBeginUser;
-   PetscCall(PetscInitialize(&argc, &args, (char *)0, help));
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-nx", &nx, NULL));
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-ny", &ny, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-Lx", &Lx, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-Ly", &Ly, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-alpha", &alpha, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-bcW", &bcW, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-bcE", &bcE, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-bcN", &bcN, NULL));
-   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-bcS", &bcS, NULL));
+    DM da;
+    Mat A;
+    Vec T, b;
+    KSP ksp;
+    PC pc;
 
-   N  = nx*ny;
-   dx = Lx/nx;
-   dy = Ly/ny;
-   Ae = dy;
-   Aw = dy;
-   As = dx;
-   An = dx;
+    /* Grid */
+    PetscInt nx = 100, ny = 50;
 
-   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-   Compute the matrix and right-hand-side vector that define
-   the linear system, Ax = b.
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+    /* Domain */
+    PetscReal Lx = 1.0, Ly = 2.0;
+    PetscReal dx = Lx / nx;
+    PetscReal dy = Ly / ny;
 
-   /*
-   Create vectors.  Note that we form 1 vector from scratch and
-   then duplicate as needed. For this simple case let PETSc decide how
-   many elements of the vector are stored on each processor. The second
-   argument to VecSetSizes() below causes PETSc to decide.
-   */
-   PetscCall(VecCreate(PETSC_COMM_WORLD, &x));
-   PetscCall(VecSetSizes(x, PETSC_DECIDE, N));
-   PetscCall(VecSetFromOptions(x));
-   PetscCall(VecDuplicate(x, &b));
+    /* Physical properties */
+    PetscReal alpha = 1.0;
 
-   /* Identify the starting and ending mesh points on each
-   processor for the interior part of the mesh. We let PETSc decide
-   above. */
+    /* Boundary conditions */
+    PetscReal bcW = 0.0;
+    PetscReal bcE = 100.0;
+    PetscReal bcS = 0.0;
+    PetscReal bcN = 0.0;
 
-   PetscCall(VecGetOwnershipRange(x, &rstart, &rend));
-   PetscCall(VecGetLocalSize(x, &nlocal));
+    /* Face areas */
+    PetscReal Aw = dy;
+    PetscReal Ae = dy;
+    PetscReal As = dx;
+    PetscReal An = dx;
 
-   /*
-   Create matrix.  When using MatCreate(), the matrix format can
-   be specified at runtime.
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-nx", &nx, NULL));
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-ny", &ny, NULL));
 
-   Performance tuning note:  For problems of substantial size,
-   preallocation of matrix memory is crucial for attaining good
-   performance. See the matrix chapter of the users manual for details.
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-nx", &nx, NULL));
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-ny", &ny, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-Lx", &Lx, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-Ly", &Ly, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-alpha", &alpha, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-bcW", &bcW, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-bcE", &bcE, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-bcN", &bcN, NULL));
+    PetscCall(PetscOptionsGetReal(NULL, NULL, "-bcS", &bcS, NULL));    
 
-   We pass in nlocal as the "local" size of the matrix to force it
-   to have the same parallel layout as the vector created above.
-   */
+    /* Create structured grid */
+    PetscCall(
+        DMDACreate2d(
+            PETSC_COMM_WORLD,
+            DM_BOUNDARY_NONE,
+            DM_BOUNDARY_NONE,
+            DMDA_STENCIL_STAR,
+            nx,
+            ny,
+            PETSC_DECIDE,
+            PETSC_DECIDE,
+            1, /* one dof = temperature */
+            1, /* stencil width */
+            NULL,
+            NULL,
+            &da));
 
-   PetscCall(MatCreate(PETSC_COMM_WORLD, &A));
-   PetscCall(MatSetSizes(A, nlocal, nlocal, N, N));
-   PetscCall(MatSetFromOptions(A));
-   PetscCall(MatSetUp(A));
+    PetscCall(DMSetUp(da));
 
-   /*
-   Assemble matrix.
+    /* Create matrix and vectors */
+    PetscCall(DMCreateMatrix(da, &A));
+    PetscCall(DMCreateGlobalVector(da, &T));
+    PetscCall(VecDuplicate(T, &b));
 
-   The linear system is distributed across the processors by
-   chunks of contiguous rows, which correspond to contiguous
-   sections of the mesh on which the problem is discretized.
-   For matrix assembly, each processor contributes entries for
-   the part that it owns locally.
-   */
+    PetscCall(PetscObjectSetName((PetscObject)T, "Temperature"));
 
-   for (p = rstart; p < rend; p++) 
-   {
-      ijth(p,nx, &i,&j);
-      k = 0; Sp = 0; Su = 0;
-      if (i==0)
-      {
-         aW = 0;
-         aE = alpha*Ae/dx;
-         Sp += -2*alpha*Aw/dx;
-         Su += (2*alpha*Aw/dx)*bcE;
-      }
-      else if (i==nx-1)
-      {
-         aW = alpha*Aw/dx;
-         aE = 0;
-         Sp += -2*alpha*Ae/dx;
-         Su += (2*alpha*Ae/dx)*bcW;
-      }
-      else
-      {
-         aW = alpha*Aw/dx;
-         aE = alpha*Ae/dx;
-      }
+    /* Get local ownership region  */
+    PetscInt xs, ys, xm, ym;
 
-      if (j==0){
-         aS = 0;
-         aN = alpha*An/dy;
-         Sp += -2*alpha*As/dy;
-         Su += (2*alpha*As/dy)*bcS;
-      }
-      else if (j==ny-1)
-      {
-         aS = alpha*As/dy;
-         aN = 0;
-         Sp += -2*alpha*An/dy;
-         Su += (2*alpha*An/dy)*bcN;
-      }
-      else
-      {
-         aS = alpha*As/dy;
-         aN = alpha*An/dy;
-      }
+    PetscCall(
+        DMDAGetCorners(
+            da,
+            &xs,
+            &ys,
+            NULL,
+            &xm,
+            &ym,
+            NULL));
 
-      aP = aW + aE + aS + aN - Sp;
-      col[k] = p; value[k] = aP; ++k;     
+    /* Assemble FVM matrix */
+    for (PetscInt j = ys; j < ys + ym; j++)
+    {
+        for (PetscInt i = xs; i < xs + xm; i++)
+        {
+            PetscReal aW, aE, aS, aN, aP;
+            PetscReal Sp = 0.0;
+            PetscReal Su = 0.0;
 
-      if (j>0)
-      {
-         col[k] = pth(nx,i,j-1); value[k] = -aS; ++k;
-      }
-      if (j<ny-1)
-      {
-         col[k] = pth(nx,i,j+1); value[k] = -aN; ++k;
-      }
-      if (i>0)
-      {
-         col[k] = pth(nx,i-1,j); value[k] = -aW; ++k;
-      }
-      if (i<nx-1)
-      {
-         col[k] = pth(nx,i+1,j); value[k] = -aE; ++k;
-      }
+            PetscScalar val[5];
+            MatStencil row, col[5];
 
-      bi = Su;
+            PetscInt k = 0;
 
-      PetscCall(MatSetValues(A, 1, &p, k, col, value, INSERT_VALUES));
-      PetscCall(VecSetValues(b, 1, &p, &bi, INSERT_VALUES));
-   }
+            if (i == 0)
+            {
+                aW = 0.0;
+                aE = alpha * Ae / dx;
 
-   /* Assemble the matrix */
-   PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
-   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+                Sp += -2.0 * alpha * Aw / dx;
+                Su += (2.0 * alpha * Aw / dx) * bcW;
+            }
+            else if (i == nx - 1)
+            {
+                aW = alpha * Aw / dx;
+                aE = 0.0;
 
-   PetscCall(VecAssemblyBegin(b));
-   PetscCall(VecAssemblyEnd(b));
-   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-         Create the linear solver and set various options
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-   /*
-   Create linear solver context
-   */
-   PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
+                Sp += -2.0 * alpha * Ae / dx;
+                Su += (2.0 * alpha * Ae / dx) * bcE;
+            }
+            else
+            {
+                aW = alpha * Aw / dx;
+                aE = alpha * Ae / dx;
+            }
 
-   /*
-   Set operators. Here the matrix that defines the linear system
-   also serves as the preconditioning matrix.
-   */
-   PetscCall(KSPSetOperators(ksp, A, A));
+            if (j == 0)
+            {
+                aS = 0.0;
+                aN = alpha * An / dy;
 
-   /*
-   Set linear solver defaults for this problem (optional).
-   - By extracting the KSP and PC contexts from the KSP context,
-   we can then directly call any KSP and PC routines to set
-   various options.
-   - The following four statements are optional; all of these
-   parameters could alternatively be specified at runtime via
-   KSPSetFromOptions();
-   */
-   PetscCall(KSPGetPC(ksp, &pc));
-   PetscCall(PCSetType(pc, PCJACOBI));
-   PetscCall(KSPSetTolerances(ksp, tol, PETSC_DEFAULT, PETSC_DEFAULT, PETSC_DEFAULT));
+                Sp += -2.0 * alpha * As / dy;
+                Su += (2.0 * alpha * As / dy) * bcS;
+            }
+            else if (j == ny - 1)
+            {
+                aS = alpha * As / dy;
+                aN = 0.0;
 
-   /*
-   Set runtime options, e.g.,
-   -ksp_type <type> -pc_type <type> -ksp_monitor -ksp_rtol <rtol>
-   These options will override those specified above as long as
-   KSPSetFromOptions() is called _after_ any other customization
-   routines.
-   */
-   PetscCall(KSPSetFromOptions(ksp));
+                Sp += -2.0 * alpha * An / dy;
+                Su += (2.0 * alpha * An / dy) * bcN;
+            }
+            else
+            {
+                aS = alpha * As / dy;
+                aN = alpha * An / dy;
+            }
 
-   /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-   Solve the linear system
-   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-   /*
-   Solve linear system
-   */
-   PetscCall(KSPSolve(ksp, b, x));
+            aP = aW + aE + aS + aN - Sp;
 
-   /*
-   View solver info; we could instead use the option -ksp_view to
-   print this info to the screen at the conclusion of KSPSolve().
-   */
-   PetscCall(KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD));
+            row.i = i;
+            row.j = j;
 
-   //Save temperature
-   PetscViewer viewer;
-   PetscCall(PetscViewerASCIIOpen(PETSC_COMM_WORLD, "T.out", &viewer));
-   PetscCall(PetscViewerSetType(viewer ,PETSCVIEWERASCII));
-   PetscCall(VecView(x, viewer));
-   PetscCall(PetscViewerDestroy(&viewer));
+            col[k].i = i;
+            col[k].j = j;
+            val[k] = aP;
+            k++;
 
-   /*
-   Free work space.  All PETSc objects should be destroyed when they
-   are no longer needed.
-   */
-   PetscCall(VecDestroy(&x));
-   PetscCall(VecDestroy(&b));
-   PetscCall(MatDestroy(&A));
-   PetscCall(KSPDestroy(&ksp));
+            if (i > 0)
+            {
+                col[k].i = i - 1;
+                col[k].j = j;
+                val[k] = -aW;
+                k++;
+            }
 
-   /*
-   Always call PetscFinalize() before exiting a program.  This routine
-   - finalizes the PETSc libraries as well as MPI
-   - provides summary and diagnostic information if certain runtime
-   options are chosen (e.g., -log_view).
-   */
-   PetscCall(PetscFinalize());
-   return 0;
-}
+            if (i < nx - 1)
+            {
+                col[k].i = i + 1;
+                col[k].j = j;
+                val[k] = -aE;
+                k++;
+            }
 
-void ijth(const PetscInt p,const PetscInt nx, PetscInt* i,PetscInt* j)
-{
-   *j = p/nx;
-   *i = p - (*j)*nx;    
-}
+            if (j > 0)
+            {
+                col[k].i = i;
+                col[k].j = j - 1;
+                val[k] = -aS;
+                k++;
+            }
 
-PetscInt pth(const PetscInt nx, const PetscInt i, const PetscInt j)
-{
-   return j*nx + i;
+            if (j < ny - 1)
+            {
+                col[k].i = i;
+                col[k].j = j + 1;
+                val[k] = -aN;
+                k++;
+            }
+
+            PetscCall(
+                MatSetValuesStencil(
+                    A,
+                    1,
+                    &row,
+                    k,
+                    col,
+                    val,
+                    INSERT_VALUES));
+
+            PetscScalar rhs = Su;
+
+            PetscCall(
+                VecSetValue(
+                    b,
+                    j * nx + i,
+                    rhs,
+                    INSERT_VALUES));
+        }
+    }
+
+    PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+
+    PetscCall(VecAssemblyBegin(b));
+    PetscCall(VecAssemblyEnd(b));
+
+    /* Solve */
+    PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
+    PetscCall(KSPSetOperators(ksp, A, A));
+
+    /* Set default solver and pc */
+    PetscCall(KSPSetType(ksp, KSPCG));
+    PetscCall(KSPGetPC(ksp, &pc));
+    PetscCall(PCSetType(pc, PCGAMG));
+
+    /* Set provided solver/pc options, if provided by user */
+    PetscCall(KSPSetFromOptions(ksp));
+
+    /* Call the solver */
+    PetscCall(KSPSolve(ksp, b, T));
+    PetscCall(KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD));
+
+    PetscCall(KSPGetPC(ksp, &pc));    
+    PetscCall(PCSetType(pc,PCGAMG));
+
+    PetscCall(KSPSetFromOptions(ksp));
+    PetscCall(KSPSolve(ksp, b, T));
+    PetscCall(KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD));
+
+    /* Output directly for ParaView */
+    WriteResults(T);
+
+    /* Cleanup */
+    PetscCall(VecDestroy(&T));
+    PetscCall(VecDestroy(&b));
+    PetscCall(MatDestroy(&A));
+    PetscCall(KSPDestroy(&ksp));
+    PetscCall(DMDestroy(&da));
+
+    PetscCall(PetscFinalize());
+
+    return 0;
 }
