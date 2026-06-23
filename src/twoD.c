@@ -5,22 +5,7 @@
 static char help[] =
     "Solves 2D steady heat equation using finite volume method.\n";
 
-PetscErrorCode WriteResults(Vec T)
-{
-    PetscViewer viewer;
-
-    PetscCall(
-        PetscViewerVTKOpen(
-            PETSC_COMM_WORLD,
-            "temperature.vts",
-            FILE_MODE_WRITE,
-            &viewer));
-
-    PetscCall(VecView(T, viewer));
-    PetscCall(PetscViewerDestroy(&viewer));
-
-    return PETSC_SUCCESS;
-}
+PetscErrorCode WriteResults(Vec T);
 
 int main(int argc, char **args)
 {
@@ -257,4 +242,21 @@ int main(int argc, char **args)
     PetscCall(PetscFinalize());
 
     return 0;
+}
+
+PetscErrorCode WriteResults(Vec T)
+{
+    PetscViewer viewer;
+
+    PetscCall(
+        PetscViewerVTKOpen(
+            PETSC_COMM_WORLD,
+            "temperature.vts",
+            FILE_MODE_WRITE,
+            &viewer));
+
+    PetscCall(VecView(T, viewer));
+    PetscCall(PetscViewerDestroy(&viewer));
+
+    return PETSC_SUCCESS;
 }
