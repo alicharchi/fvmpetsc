@@ -33,12 +33,10 @@ int main(int argc, char **args)
     PC pc;
 
     /* Grid */
-    PetscInt nx = 100, ny = 50;
+    PetscInt nx = 100, ny = 100;
 
     /* Domain */
-    PetscReal Lx = 1.0, Ly = 2.0;
-    PetscReal dx = Lx / nx;
-    PetscReal dy = Ly / ny;
+    PetscReal Lx = 1.0, Ly = 1.0;
 
     /* Physical properties */
     PetscReal alpha = 1.0;
@@ -48,18 +46,7 @@ int main(int argc, char **args)
     PetscReal bcE = 100.0;
     PetscReal bcS = 0.0;
     PetscReal bcN = 0.0;
-
-    /* Face areas */
-    PetscReal Aw = dy;
-    PetscReal Ae = dy;
-    PetscReal As = dx;
-    PetscReal An = dx;
-
-    PetscCall(PetscOptionsGetInt(NULL, NULL, "-nx", &nx, NULL));
-    PetscCall(PetscOptionsGetInt(NULL, NULL, "-ny", &ny, NULL));
-
-    PetscCall(PetscOptionsGetInt(NULL, NULL, "-nx", &nx, NULL));
-    PetscCall(PetscOptionsGetInt(NULL, NULL, "-ny", &ny, NULL));
+    
     PetscCall(PetscOptionsGetReal(NULL, NULL, "-Lx", &Lx, NULL));
     PetscCall(PetscOptionsGetReal(NULL, NULL, "-Ly", &Ly, NULL));
     PetscCall(PetscOptionsGetReal(NULL, NULL, "-alpha", &alpha, NULL));
@@ -84,13 +71,29 @@ int main(int argc, char **args)
             NULL,
             NULL,
             &da));
-
+   
+    PetscCall(DMSetFromOptions(da));
     PetscCall(DMSetUp(da));
+    PetscCall(DMDASetUniformCoordinates(da, 0.0, Lx, 0.0, Ly, 0.0, 0.0));
+
+    PetscCall(DMDAGetInfo(da, NULL, &nx, &ny, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+
+    PetscReal dx = Lx / nx;
+    PetscReal dy = Ly / ny;
+
+   /* Face areas */
+    PetscReal Aw = dy;
+    PetscReal Ae = dy;
+    PetscReal As = dx;
+    PetscReal An = dx;
 
     /* Create matrix and vectors */
     PetscCall(DMCreateMatrix(da, &A));
     PetscCall(DMCreateGlobalVector(da, &T));
     PetscCall(VecDuplicate(T, &b));
+
+   PetscScalar **barr;
+   PetscCall(DMDAVecGetArray(da, b, &barr));
 
     PetscCall(PetscObjectSetName((PetscObject)T, "Temperature"));
 
@@ -217,22 +220,14 @@ int main(int argc, char **args)
                     val,
                     INSERT_VALUES));
 
-            PetscScalar rhs = Su;
-
-            PetscCall(
-                VecSetValue(
-                    b,
-                    j * nx + i,
-                    rhs,
-                    INSERT_VALUES));
-        }
+            barr[j][i] = Su;
+      }
     }
+
+    PetscCall(DMDAVecRestoreArray(da, b, &barr));
 
     PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
-
-    PetscCall(VecAssemblyBegin(b));
-    PetscCall(VecAssemblyEnd(b));
 
     /* Solve */
     PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
@@ -247,18 +242,10 @@ int main(int argc, char **args)
     PetscCall(KSPSetFromOptions(ksp));
 
     /* Call the solver */
-    PetscCall(KSPSolve(ksp, b, T));
-    PetscCall(KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD));
-
-    PetscCall(KSPGetPC(ksp, &pc));    
-    PetscCall(PCSetType(pc,PCGAMG));
-
-    PetscCall(KSPSetFromOptions(ksp));
-    PetscCall(KSPSolve(ksp, b, T));
-    PetscCall(KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD));
+    PetscCall(KSPSolve(ksp, b, T));    
 
     /* Output directly for ParaView */
-    WriteResults(T);
+    PetscCall(WriteResults(T));
 
     /* Cleanup */
     PetscCall(VecDestroy(&T));
